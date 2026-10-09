@@ -115,6 +115,15 @@ class ManualTypoCheckTests(unittest.TestCase):
     def test_impossible_drop_is_caught(self):
         self.assertEqual(len(self.check({"brix": 2.0}, 2, {"brix": 13.0})), 1)
 
+    def test_ethanol_going_down_is_caught(self):
+        [warning] = self.check({"ethanol_percent": 5.2}, 24, {"ethanol_percent": 7.5})
+        self.assertIn("only rises", warning)
+        self.assertEqual(self.check({"ethanol_percent": 7.8}, 24, {"ethanol_percent": 7.5}), [])
+
+    def test_turbidity_jump_is_caught(self):
+        self.assertEqual(len(self.check({"turbidity_ntu": 300.0}, 2, {"turbidity_ntu": 20.0})), 1)
+        self.assertEqual(self.check({"turbidity_ntu": 25.0}, 2, {"turbidity_ntu": 20.0}), [])
+
     def test_ph_typo_and_first_value(self):
         self.assertEqual(len(self.check({"ph": 3.0}, 1, {"ph": 4.3})), 1)
         self.assertEqual(self.check({"ph": 4.3}, 1, {}), [])  # nothing to compare with

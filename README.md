@@ -2,6 +2,7 @@
 
 Quality-control monitoring for a banana-based alcoholic beverage.
 See [PLAN.md](PLAN.md) for the full layered plan.
+**New here? Read [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)**: the complete guide to how every part works.
 
 **Current status: Phases 1–5 are done: simulator, PostgreSQL database,
 backend API, QC rules + alerts, and the dashboard. Phase 6 (ESP32): the
@@ -32,6 +33,17 @@ Set `ALLOW_SIMULATED=false` in `.env` to refuse simulated readings in production
 
 ## Quick start
 
+Build the dashboard once (needs Node.js; repeat after changing files in `frontend/`):
+
+```
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+Start the server:
+
 ```
 .venv\Scripts\activate
 python -m uvicorn smartmet_api.main:app --reload
@@ -44,21 +56,32 @@ send a batch from a second terminal:
 python simulator.py --batch-id BATCH-010 --scenario contamination --fault-rate 0.02 --http
 ```
 
-## Dashboard
+## Dashboard (React + Tailwind CSS, in `frontend/`)
 
-- **Home page:** open problems (most serious first), all batches with their
-  alert badges, and a form to start a new batch.
-- **Batch page:** click a batch to see:
-  - the latest values. A tile turns red outside the limits, or says
-    "check the sensor" when that sensor is acting up.
-  - charts with the limit lines.
-  - all alerts of the batch.
-  - **Enter values by hand**: type Brix, pH or temperature from hand-held
-    instruments. If a value looks like a typo (for example Brix going up), you
-    get a warning and must confirm before it is saved.
-  - **Mark finished / Abort / Reopen** buttons.
-- Both pages refresh every 10 seconds. They work without internet; the chart
-  library is stored in `smartmet_api/static/vendor`.
+- **Sidebar:** Overview, Alerts (with the number of open problems), Devices,
+  and every active batch with a coloured health dot.
+- **Overview:**
+  - one sentence saying whether anything needs attention
+  - four key numbers
+  - a card per active batch with its health (✓ Good, ⚠ Watch,
+    ✕ Problem, ✓ Ready), day of fermentation, progress bar, latest values
+    and its most important problem in plain words
+- **Batch page:**
+  - **What is happening**: every open problem with *what to do*
+  - value cards with status, normal range and the trend over the last 6 h
+  - charts with the normal range shaded (or **Show as table**)
+  - **Enter values by hand** with the typo check
+  - devices, alert history, and **Mark finished / Abort / Reopen**
+- **Alerts:** grouped into *Needs action*, *Sensor problems* and
+  *Information*, each with an explanation and what to do.
+- **Devices:** online or offline status, assigned batch, and how to add one.
+- **Updates and modes:** everything refreshes every 10 seconds. It follows the
+  computer's light or dark mode and works on phones.
+
+**Changing the dashboard:** run the Python server, then in a second terminal
+`cd frontend` and `npm run dev`. Open http://localhost:5173. Changes appear
+instantly, and API calls go to the Python server on port 8000.
+
 See the phase table in [PLAN.md](PLAN.md).
 
 ## One-time setup (Windows)

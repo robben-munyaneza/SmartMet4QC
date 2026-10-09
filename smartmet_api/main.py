@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -45,7 +45,8 @@ from .schemas import (
     StoreResult,
 )
 
-STATIC = Path(__file__).parent / "static"
+# The React dashboard, built with `npm run build` in frontend/ (see README).
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 ETHANOL_PER_BRIX = 0.55  # rough rule of thumb for the on-screen estimate only
 QC = QCConfig()
 ONLINE_WITHIN = timedelta(minutes=5)  # a device that sent nothing for longer is shown as offline
@@ -61,7 +62,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SmartMet4QC API", version="0.5.0", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False), name="assets")
 
 
 def get_session():
@@ -83,6 +84,46 @@ def get_batch_or_404(session: Session, code: str) -> Batch:
     return batch
 
 
+SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+
+
+def batch_health(session: Session, batch: Batch, latest: dict, open_alerts: list, readings: int) -> dict:
+    """Health label, alert counts, most serious alert and estimated progress of one batch."""
+    counts = {severity: 0 for severity in SEVERITY_RANK}
+    for alert in open_alerts:
+        counts[alert.severity] += 1
+    top = min(open_alerts, key=lambda a: (SEVERITY_RANK[a.severity], -a.opened_at.timestamp()), default=None)
+
+    if batch.status != "active":
+        health = "closed"
+    elif counts["critical"]:
+        health = "problem"
+    elif counts["warning"]:
+        health = "watch"
+    elif any(a.rule == "batch_finished" for a in open_alerts):
+        health = "ready"
+    elif not readings:
+        health = "no-data"
+    else:
+        health = "good"
+
+    # Progress: share of the sugar between the first Brix value and the "nearly done" level
+    # that has been used. A rough estimate for the progress bar, not a measurement.
+    brix_start = first_value(session, batch.id, "brix") if "brix" in latest else None
+    progress = None
+    if brix_start is not None and brix_start > QC.brix_done:
+        used = (brix_start - latest["brix"][1]) / (brix_start - QC.brix_done)
+        progress = round(min(1.0, max(0.0, used)), 3)
+    return {
+        "health": health,
+        "open_alerts": counts,
+        "top_alert": top and {"rule": top.rule, "measurement": top.measurement,
+                              "severity": top.severity, "message": top.message},
+        "brix_start": brix_start,
+        "progress": progress,
+    }
+
+
 def store_and_check(session: Session, reading: dict, response: Response, device_id: int | None = None) -> StoreResult:
     """Store one reading, run the QC checks and commit."""
     inserted, _ = store_readings(session, [reading], device_id)
@@ -98,14 +139,34 @@ def store_and_check(session: Session, reading: dict, response: Response, device_
 
 # ---------------------------------------------------------------- dashboard pages
 
+NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>SmartMet4QC</title>
+<body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 16px;line-height:1.5">
+<h1>The dashboard is not built yet</h1>
+<p>Build it once (needs Node.js), then reload this page:</p>
+<pre style="background:#f0efec;padding:12px;border-radius:8px">cd frontend
+npm install
+npm run build</pre>
+<p>The API itself is running: <a href="/docs">/docs</a>.</p></body>"""
+
+
+# One page app: every dashboard address loads the same page, which shows the right view.
 @app.get("/", include_in_schema=False)
-def dashboard_page():
-    return FileResponse(STATIC / "index.html")
-
-
 @app.get("/batches/{code}", include_in_schema=False)
-def batch_page(code: str):
-    return FileResponse(STATIC / "batch.html")
+@app.get("/alerts", include_in_schema=False)
+@app.get("/devices", include_in_schema=False)
+def dashboard_page(code: str | None = None):
+    index = FRONTEND_DIST / "index.html"
+    if not index.exists():
+        return HTMLResponse(NOT_BUILT, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return FileResponse(index)
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon():
+    icon = FRONTEND_DIST / "favicon.svg"
+    if not icon.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return FileResponse(icon)
 
 
 # ---------------------------------------------------------------- API
@@ -222,7 +283,22 @@ def get_alerts(
 
 @app.get("/api/v1/batches", response_model=list[BatchOut])
 def list_batches(session: Session = Depends(get_session)):
-    return batch_summaries(session)
+    """All batches with their health, latest values and progress (one request for the overview)."""
+    open_by_batch = {}
+    for alert, code in list_alerts(session, "open", limit=5000):
+        open_by_batch.setdefault(code, []).append(alert)
+    batches = {b.code: b for b in session.scalars(select(Batch))}
+    result = []
+    for summary in batch_summaries(session):
+        batch = batches[summary["code"]]
+        latest = latest_values(session, batch.id)
+        result.append({
+            **summary,
+            "started_at": batch.started_at,
+            "latest": {k: {"measured_at": t, "value": v} for k, (t, v) in latest.items()},
+            **batch_health(session, batch, latest, open_by_batch.get(batch.code, []), summary["readings"]),
+        })
+    return result
 
 
 @app.post("/api/v1/batches", response_model=BatchDetail, status_code=status.HTTP_201_CREATED)
@@ -241,18 +317,26 @@ def get_batch(code: str, session: Session = Depends(get_session)):
     """Batch details, latest value of each measurement, and the QC limits for charts."""
     batch = get_batch_or_404(session, code)
     latest = latest_values(session, batch.id)
+    open_alerts = [a for a, _ in list_alerts(session, "open", code, limit=5000)]
+    health = batch_health(session, batch, latest, open_alerts, readings=len(latest))
     ethanol = None
-    if "brix" in latest:
-        start_brix = first_value(session, batch.id, "brix")
-        ethanol = round(max(0.0, start_brix - latest["brix"][1]) * ETHANOL_PER_BRIX, 1)
+    if health["brix_start"] is not None:
+        ethanol = round(max(0.0, health["brix_start"] - latest["brix"][1]) * ETHANOL_PER_BRIX, 1)
     return BatchDetail(
+        **health,
         code=batch.code, product=batch.product, status=batch.status,
         started_at=batch.started_at, ended_at=batch.ended_at, notes=batch.notes,
         latest={k: {"measured_at": t, "value": v} for k, (t, v) in latest.items()},
         ethanol_estimate=ethanol,
-        limits={"temp_max_c": QC.temp_max_c, "temp_min_c": QC.temp_min_c, "ph_min": QC.ph_min,
-                "turbidity_max_ntu": QC.turbidity_max_ntu, "brix_done": QC.brix_done},
+        limits=qc_limits(),
     )
+
+
+@app.get("/api/v1/limits")
+def qc_limits() -> dict[str, float]:
+    """The QC limits (placeholders until real batch data exists; set in smartmet_qc/config.py)."""
+    return {"temp_max_c": QC.temp_max_c, "temp_min_c": QC.temp_min_c, "ph_min": QC.ph_min,
+            "turbidity_max_ntu": QC.turbidity_max_ntu, "brix_done": QC.brix_done}
 
 
 @app.patch("/api/v1/batches/{code}", response_model=BatchDetail)

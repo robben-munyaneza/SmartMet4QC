@@ -9,7 +9,8 @@ from datetime import datetime
 
 from .config import QCConfig
 
-BRIX_MAX_RISE = 1.0  # Brix only falls during fermentation; a bigger rise is almost surely a typo
+BRIX_MAX_RISE = 1.0     # Brix only falls during fermentation; a bigger rise is almost surely a typo
+ETHANOL_MAX_DROP = 1.0  # alcohol only rises during fermentation; a bigger drop is almost surely a typo
 
 
 def check_manual_values(values: dict, measured_at: datetime, previous: dict,
@@ -30,6 +31,11 @@ def check_manual_values(values: dict, measured_at: datetime, previous: dict,
             warnings.append(
                 f"Brix {value} is {change:.1f} higher than the previous value {before}. "
                 "Brix normally only falls during fermentation. Is this a typo?")
+            continue
+        if measurement == "ethanol_percent" and -change > ETHANOL_MAX_DROP:
+            warnings.append(
+                f"Ethanol {value}% is {-change:.1f} lower than the previous value {before}%. "
+                "Alcohol normally only rises during fermentation. Is this a typo?")
             continue
         allowed = cfg.spike_base[measurement] + cfg.spike_rate_per_hour[measurement] * hours
         if abs(change) > allowed:

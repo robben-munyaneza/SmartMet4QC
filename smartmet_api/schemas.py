@@ -100,7 +100,26 @@ class LatestValue(BaseModel):
     measured_at: datetime
 
 
-class BatchDetail(BaseModel):
+class TopAlert(BaseModel):
+    rule: str
+    measurement: str
+    severity: str
+    message: str
+
+
+class BatchHealth(BaseModel):
+    """How a batch is doing, computed from its open alerts and latest values."""
+
+    # problem (open critical) | watch (open warning) | ready (looks finished) | good |
+    # no-data (no readings yet) | closed (finished or aborted)
+    health: str
+    open_alerts: dict[str, int]          # severity -> count
+    top_alert: TopAlert | None           # the most serious open alert
+    brix_start: float | None
+    progress: float | None               # 0..1, estimated share of the sugar used so far
+
+
+class BatchDetail(BatchHealth):
     code: str
     product: str
     status: str
@@ -126,12 +145,14 @@ class DeviceUpdate(BaseModel):
     batch_id: str | None  # batch code, or null to stop measuring
 
 
-class BatchOut(BaseModel):
+class BatchOut(BatchHealth):
     code: str
     status: str
     readings: int
     first: datetime | None
     last: datetime | None
+    started_at: datetime | None
+    latest: dict[str, LatestValue]
 
 
 class ReadingOut(BaseModel):

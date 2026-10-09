@@ -71,6 +71,19 @@ class DashboardApiTests(unittest.TestCase):
                     "measurements": {"brix": brix}}
             self.assertEqual(self.client.post(MANUAL, json=body).status_code, 201)
 
+    def test_manual_ethanol_and_turbidity(self):
+        self.create()
+        body = {"batch_id": "BATCH-D1", "timestamp": "2026-10-09T08:00:00+00:00",
+                "measurements": {"ethanol_percent": 7.4, "turbidity_ntu": 12.0}}
+        self.assertEqual(self.client.post(MANUAL, json=body).status_code, 201)
+        [stored] = self.client.get("/api/v1/batches/BATCH-D1/readings").json()
+        self.assertEqual((stored["source"], stored["ethanol_percent"], stored["turbidity_ntu"]), ("manual", 7.4, 12.0))
+        detail = self.client.get("/api/v1/batches/BATCH-D1").json()
+        self.assertEqual(detail["latest"]["ethanol_percent"]["value"], 7.4)
+
+        lower = {**body, "timestamp": "2026-10-10T08:00:00+00:00", "measurements": {"ethanol_percent": 4.0}}
+        self.assertEqual(self.client.post(MANUAL, json=lower).status_code, 409)
+
     def test_manual_entry_rules(self):
         self.assertEqual(self.client.post(MANUAL, json={"batch_id": "NOPE", "measurements": {"brix": 12}}).status_code, 404)
         self.create()
@@ -78,11 +91,53 @@ class DashboardApiTests(unittest.TestCase):
         no_time = self.client.post(MANUAL, json={"batch_id": "BATCH-D1", "measurements": {"ph": 4.4}})
         self.assertEqual(no_time.status_code, 201)  # time defaults to now
 
-    def test_pages_are_served(self):
-        for path in ("/", "/batches/BATCH-D1", "/static/common.js", "/static/vendor/chart.umd.js"):
-            with self.subTest(path):
-                self.assertEqual(self.client.get(path).status_code, 200)
+    def test_dashboard_pages_serve_the_react_app(self):
+        import tempfile
+        from pathlib import Path
 
+        import smartmet_api.main as main
+
+        saved = main.FRONTEND_DIST
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                main.FRONTEND_DIST = Path(tmp)
+                for path in ("/", "/alerts"):  # not built: instructions instead of a broken page
+                    response = self.client.get(path)
+                    self.assertEqual(response.status_code, 503)
+                    self.assertIn("npm run build", response.text)
+                (Path(tmp) / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
+                for path in ("/", "/batches/BATCH-D1", "/alerts", "/devices"):
+                    with self.subTest(path):
+                        response = self.client.get(path)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertIn('id="root"', response.text)
+        finally:
+            main.FRONTEND_DIST = saved
+
+    def test_batch_list_has_health_and_progress(self):
+        for r in Simulator(batch_id="BATCH-H1", scenario="contamination", seed=1).readings(80):
+            self.client.post("/api/v1/measurements", json=r)
+        self.create("BATCH-EMPTY")
+        batches = {b["code"]: b for b in self.client.get("/api/v1/batches").json()}
+
+        sour = batches["BATCH-H1"]
+        self.assertEqual(sour["health"], "problem")
+        self.assertEqual(sour["top_alert"]["rule"], "ph_low")
+        self.assertGreaterEqual(sour["open_alerts"]["critical"], 1)
+        self.assertGreater(sour["progress"], 0.9)
+        self.assertIsNotNone(sour["brix_start"])
+        self.assertIn("ph", sour["latest"])
+
+        empty = batches["BATCH-EMPTY"]
+        self.assertEqual((empty["health"], empty["progress"], empty["top_alert"]), ("no-data", None, None))
+
+        self.client.patch("/api/v1/batches/BATCH-EMPTY", json={"status": "aborted"})
+        self.assertEqual(self.client.get("/api/v1/batches/BATCH-EMPTY").json()["health"], "closed")
+
+    def test_limits(self):
+        limits = self.client.get("/api/v1/limits").json()
+        self.assertEqual(limits["ph_min"], 3.5)
+        self.assertEqual(set(limits), {"temp_max_c", "temp_min_c", "ph_min", "turbidity_max_ntu", "brix_done"})
 
 if __name__ == "__main__":
     unittest.main()

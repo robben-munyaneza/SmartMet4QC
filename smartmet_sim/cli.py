@@ -91,10 +91,34 @@ def parse_args(argv=None):
                         help="act like the ESP32: send only temperature and pH, as source 'device', without "
                              "batch id (the server uses the batch assigned to the device); needs --api-key")
     parser.add_argument("--api-key", help="device API key (from: python -m smartmet_db device add NAME)")
+    parser.add_argument("--manual-brix-every", type=float, metavar="HOURS",
+                        help="also act like a person typing the Brix value every HOURS batch hours "
+                             "into batch --batch-id (uses the dashboard's hand-entry API, with its typo check)")
     args = parser.parse_args(argv)
     if args.device and not args.api_key:
         parser.error("--device needs --api-key")
+    if args.manual_brix_every and not args.http:
+        parser.error("--manual-brix-every needs --http")
     return args
+
+
+def manual_url(measurements_url: str) -> str:
+    return measurements_url.rsplit("/measurements", 1)[0] + "/manual-readings"
+
+
+def type_brix_by_hand(url: str, batch_id: str, reading: dict) -> str:
+    """Send the Brix value the way a person does on the dashboard. Returns what happened."""
+    brix = reading["measurements"].get("brix")
+    if brix is None:
+        return "nothing to type (no Brix value)"
+    body, error = post_reading(url, {"batch_id": batch_id, "timestamp": reading["timestamp"],
+                                     "measurements": {"brix": brix}, "confirm": False})
+    if error and error.startswith("HTTP 409"):
+        # The typo check found the value unusual; a careful person corrects it instead of saving.
+        return f"Brix {brix} looked like a typo, not saved: {error[10:]}"
+    if error:
+        return f"FAILED: {error}"
+    return f"Brix {brix} typed in by hand"
 
 
 def main(argv=None):
@@ -118,6 +142,9 @@ def main(argv=None):
         for i, reading in enumerate(sim.readings(args.count)):
             if i and args.interval > 0:
                 time.sleep(args.interval)
+            typed = None
+            if args.manual_brix_every and reading["simulation"]["elapsed_hours"] % args.manual_brix_every == 0:
+                typed = type_brix_by_hand(manual_url(args.http), args.batch_id, reading)
             if args.device:
                 reading = as_device_reading(reading)
             print(json.dumps(reading) if args.json else format_reading(reading), flush=True)
@@ -134,6 +161,8 @@ def main(argv=None):
                     sent += 1
                     for alert in body.get("new_alerts", []):
                         print(f"  ALERT [{alert['severity']}] {alert['rule']}: {alert['message']}", flush=True)
+            if typed:
+                print(f"  BY HAND: {typed}", flush=True)
         print("Batch finished.")
     except KeyboardInterrupt:
         print("\nSimulator stopped.")

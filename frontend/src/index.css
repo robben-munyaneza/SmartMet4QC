@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* Design tokens. Colours follow the data-viz reference palette: status colours
+   (good / warning / critical) always come with an icon and a word, never alone.
+   Light and dark values are set on :root; Tailwind utilities read them. */
+:root {
+  color-scheme: light;
+  --page: #f4f4f1;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --sidebar: #ffffff;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #6f6d68;
+  --line: rgba(11, 11, 11, 0.1);
+  --grid: #e1e0d9;
+  --axis: #898781;
+  --accent: #2a78d6;
+  --accent-ink: #1c5cab;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --good: #0ca30c;
+  --good-ink: #006300;
+  --warn: #fab219;
+  --warn-ink: #7a5000;
+  --crit: #d03b3b;
+  --crit-ink: #b02a2a;
+  --band: rgba(12, 163, 12, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #242422;
+    --sidebar: #141413;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #9d9b93;
+    --line: rgba(255, 255, 255, 0.1);
+    --grid: #2c2c2a;
+    --axis: #898781;
+    --accent: #3987e5;
+    --accent-ink: #86b6ef;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --good-ink: #3fcf3f;
+    --warn-ink: #fab219;
+    --crit-ink: #f07a7a;
+    --band: rgba(12, 163, 12, 0.14);
+  }
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-sidebar: var(--sidebar);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-good: var(--good);
+  --color-good-ink: var(--good-ink);
+  --color-warn: var(--warn);
+  --color-warn-ink: var(--warn-ink);
+  --color-crit: var(--crit);
+  --color-crit-ink: var(--crit-ink);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  background: var(--page);
+  color: var(--ink);
+}
+
+input[type="number"]::-webkit-inner-spin-button { opacity: 0.4; }

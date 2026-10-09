@@ -108,8 +108,10 @@ then regularly (start with weekly), and whenever the probe is replaced.
 3. Put it in the **pH 7** buffer. Wait 1–2 minutes until `show` gives a stable
    mV value, then type `cal7`.
 4. Rinse and dab dry, then put it in the **pH 4** buffer. Wait until stable,
-   then type `cal4`. You should see `calibration complete: about -59 mV per
-   pH unit` (a value between about −50 and −62 at 25 °C is normal).
+   then type `cal4`. You should see `calibration complete: about -177 mV per
+   pH unit`. The DFRobot V2 board amplifies the probe signal: about 1500 mV at
+   pH 7 and 2030 mV at pH 4. A value between about −150 and −200 is normal for
+   this board. Other boards have a different gain, so their numbers differ.
 5. The calibration is saved on the board and survives restarts. `reset`
    clears it.
 

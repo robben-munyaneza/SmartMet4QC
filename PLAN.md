@@ -338,6 +338,91 @@ is probably wrong.
 Not in the MVP: login for operators, editing the QC limits on screen
 (they are in `smartmet_qc/config.py`), and a view for phones.
 
+## Phase 5b — Dashboard redesign (easier to read)
+
+Feedback on the first dashboard: it lists raw alerts, but does not say clearly
+how each batch is doing or what to do. The redesign answers three questions on
+every screen: **Is everything OK? If not, what is wrong? What should I do?**
+
+### Layout
+- A **sidebar** on the left (a menu button on phones):
+  - **Overview**, **Alerts** (with a count) and **Devices**
+  - the active batches, each with a colored health dot
+- One page app, so the sidebar stays in place while you move between pages.
+  The addresses stay the same (`/`, `/batches/CODE`, `/alerts`, `/devices`).
+
+### Overview: "how are my batches?"
+- One headline sentence, for example "2 batches need attention" or "All batches
+  look good".
+- Four key numbers: active batches, batches needing attention, batches ready to
+  finish, devices online.
+- One card per active batch:
+  - a **health label with an icon**: ✓ Good, ! Watch, ✕ Problem,
+    ✓ Ready (colour plus icon plus word, never colour alone)
+  - **day of fermentation** and a **progress bar** (sugar used so far, an
+    estimate)
+  - the latest temperature, pH and Brix
+  - the most important problem **in plain words**
+- Finished and stopped batches in a compact table. The "start a batch" form
+  folds away.
+
+### Batch page: "what is happening in this batch?"
+- **Summary in sentences**: how far fermentation is, every open problem with
+  **what to do**, or "Everything is within the normal range".
+- **Value cards**: each shows
+  - the value, its **status** (OK / Too high / Too low / Check sensor)
+  - the **normal range**
+  - a **trend arrow** with the change over the last 6 h
+- **Charts**:
+  - the **normal range shaded** instead of dashed lines
+  - x-axis in **days**
+  - hovering shows the exact time and value
+  - a "show as table" option
+- Hand entry, devices and alert history stay on the page. Alert history is
+  folded away by default.
+
+### Alerts page
+- Grouped as **Needs action** (process problems), **Sensor problems** and
+  **Information**.
+- Every alert explains what it means and what to do.
+- A switch between open and resolved alerts.
+
+### Technology (changed: React + Tailwind)
+The dashboard is rebuilt as a **React** app styled with **Tailwind CSS**, in
+`frontend/`:
+- **Build tools:** Vite and TypeScript.
+- **Libraries:**
+  - React Router for the pages
+  - TanStack Query for loading data and refreshing it every 10 s
+  - Recharts for the charts
+  - lucide-react for icons
+- **Running it:** `npm run build` writes the app to `frontend/dist`, and
+  FastAPI serves it at http://127.0.0.1:8000/. The Python server stays the only
+  thing to run, and the dashboard still works without internet.
+- **Developing it:** `npm run dev` starts a live-reloading dashboard on
+  port 5173 and passes `/api` calls through to the Python server.
+- The plain HTML pages of Phase 5 are removed.
+
+### Server
+`GET /api/v1/batches` also returns, for each batch:
+- its health
+- latest values
+- estimated progress
+- open alert counts and the most important open alert
+
+The overview then needs a single request.
+
+### Result
+Done:
+- **The React dashboard replaces the HTML pages.**
+- **Checked with screenshots** of every page, in dark and light mode and at
+  phone width.
+- **Two bugs found and fixed:**
+  - the pH normal range was shaded on the wrong side
+  - the page was wider than the screen on narrow screens
+- **Tests:** 67 Python tests pass. They now also cover batch health,
+  progress, the limits endpoint, and the dashboard serving.
+
 ## Phase 6 — Real hardware (ESP32)
 
 Phase 6 has a software part, which can be built and tested now, and a hardware
