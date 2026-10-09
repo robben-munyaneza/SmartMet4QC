@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from smartmet_qc import Observation, evaluate, reconcile, replay
 from smartmet_qc.evaluate import SENSOR_SETS, evaluate_set
+from smartmet_qc.plausibility import check_manual_values
 from smartmet_qc.rules import theil_sen_slope
 from smartmet_sim import Simulator
 
@@ -97,6 +98,26 @@ class TrendTests(unittest.TestCase):
     def test_young_batch_is_not_stuck(self):
         history = [obs(h, "manual", brix=b) for h, b in [(0, 20.0), (8, 19.9), (16, 19.8), (24, 19.6)]]
         self.assertEqual(evaluate(history, T0), [])
+
+
+class ManualTypoCheckTests(unittest.TestCase):
+    def check(self, values, hours_later, previous):
+        prev = {m: (T0, v) for m, v in previous.items()}
+        return check_manual_values(values, T0 + timedelta(hours=hours_later), prev)
+
+    def test_swapped_digits_are_caught(self):
+        [warning] = self.check({"brix": 31.0}, 8, {"brix": 13.0})
+        self.assertIn("only falls", warning)
+
+    def test_normal_fermentation_drop_is_accepted(self):
+        self.assertEqual(self.check({"brix": 10.0}, 8, {"brix": 13.5}), [])
+
+    def test_impossible_drop_is_caught(self):
+        self.assertEqual(len(self.check({"brix": 2.0}, 2, {"brix": 13.0})), 1)
+
+    def test_ph_typo_and_first_value(self):
+        self.assertEqual(len(self.check({"ph": 3.0}, 1, {"ph": 4.3})), 1)
+        self.assertEqual(self.check({"ph": 4.3}, 1, {}), [])  # nothing to compare with
 
 
 class SensorTestHarness(unittest.TestCase):

@@ -31,6 +31,9 @@ The MVP is finished when:
 | 9 | Raise **no** false alerts on a healthy batch | `normal` scenario, many seeds |
 | 10 | Accept the same data from a real ESP32 | Hardware test (section 6) |
 
+**Status (after Phase 5):** items 1–9 are done and tested with the simulator.
+Item 10 needs the ESP32 (Phase 6).
+
 **Not in the MVP:** user accounts and roles, several factories, mobile app,
 machine learning, automatic control of heaters/coolers, legal compliance
 reports.

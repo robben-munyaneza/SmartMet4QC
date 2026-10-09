@@ -3,8 +3,62 @@
 Quality-control monitoring for a banana-based alcoholic beverage.
 See [PLAN.md](PLAN.md) for the full layered plan.
 
-**Current status: Phases 1–4 are done: simulator, PostgreSQL database,
-backend API, and QC rules + alerts.**
+**Current status: Phases 1–5 are done: simulator, PostgreSQL database,
+backend API, QC rules + alerts, and the dashboard. Phase 6 (ESP32): the
+server side is done and the firmware is written; the next step needs the
+hardware. See [docs/HARDWARE.md](docs/HARDWARE.md).**
+
+After pulling new code, update the database with `python -m smartmet_db migrate`.
+The API also does this when it starts.
+
+## Devices (ESP32)
+
+```
+python -m smartmet_db device add tank-1        # prints the device's API key (only once)
+python -m smartmet_db device list
+python -m smartmet_db device assign tank-1 BATCH-010   # or use the batch page on the dashboard
+python -m smartmet_db device rotate-key tank-1 # new key; the old one stops working
+python -m smartmet_db device revoke tank-1     # the device can no longer send
+```
+
+Test the device path without hardware. The emulator sends exactly what the
+ESP32 sends (temperature and pH, no batch):
+
+```
+python simulator.py --device --api-key smk_... --http
+```
+
+Set `ALLOW_SIMULATED=false` in `.env` to refuse simulated readings in production.
+
+## Quick start
+
+```
+.venv\Scripts\activate
+python -m uvicorn smartmet_api.main:app --reload
+```
+
+Open **http://127.0.0.1:8000/** for the dashboard. To see it fill with data,
+send a batch from a second terminal:
+
+```
+python simulator.py --batch-id BATCH-010 --scenario contamination --fault-rate 0.02 --http
+```
+
+## Dashboard
+
+- **Home page:** open problems (most serious first), all batches with their
+  alert badges, and a form to start a new batch.
+- **Batch page:** click a batch to see:
+  - the latest values. A tile turns red outside the limits, or says
+    "check the sensor" when that sensor is acting up.
+  - charts with the limit lines.
+  - all alerts of the batch.
+  - **Enter values by hand**: type Brix, pH or temperature from hand-held
+    instruments. If a value looks like a typo (for example Brix going up), you
+    get a warning and must confirm before it is saved.
+  - **Mark finished / Abort / Reopen** buttons.
+- Both pages refresh every 10 seconds. They work without internet; the chart
+  library is stored in `smartmet_api/static/vendor`.
 See the phase table in [PLAN.md](PLAN.md).
 
 ## One-time setup (Windows)

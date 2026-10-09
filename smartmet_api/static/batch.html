@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Batch Detail</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="inner">
+      <a href="/">← All batches</a>
+      <h1 id="code">Batch</h1>
+      <span class="pill" id="status"></span>
+      <span class="sub" id="started"></span>
+      <span class="spacer"></span>
+      <span id="status-buttons"></span>
+      <span class="sub" id="updated"></span>
+    </div>
+  </header>
+
+  <main>
+    <section id="not-found" hidden>
+      <h2>Batch not found</h2>
+      <p>There is no batch with this code. <a href="/">Back to all batches</a>.</p>
+    </section>
+
+    <section>
+      <h2>Latest values</h2>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section>
+      <h2>Devices measuring this batch</h2>
+      <ul class="alerts" id="devices"></ul>
+      <form class="inline" id="assign" style="margin-top: 10px">
+        <label>Device<select name="device" id="device-select"></select></label>
+        <button type="submit">Measure this batch</button>
+      </form>
+      <div class="message" id="assign-msg"></div>
+    </section>
+
+    <section>
+      <h2>Enter values by hand</h2>
+      <form class="inline" id="manual">
+        <label>Brix (°Bx)<input name="brix" type="number" step="0.1" min="0" max="100"></label>
+        <label>pH<input name="ph" type="number" step="0.01" min="0" max="14"></label>
+        <label>Temperature (°C)<input name="temperature_c" type="number" step="0.1" min="-50" max="150"></label>
+        <label>Measured at<input name="time" type="datetime-local" required></label>
+        <button class="primary" type="submit">Save</button>
+      </form>
+      <div class="message" id="manual-msg"></div>
+    </section>
+
+    <section>
+      <h2>Alerts</h2>
+      <ul class="alerts" id="alerts"></ul>
+    </section>
+
+    <section>
+      <h2>Charts <span class="small muted">· hours since the batch started</span></h2>
+      <div class="charts" id="charts"></div>
+    </section>
+  </main>
+
+  <script src="/static/vendor/chart.umd.js"></script>
+  <script src="/static/common.js"></script>
+  <script>
+    const CODE = decodeURIComponent(location.pathname.split("/").pop());
+    const charts = {};
+    let batch = null;
+
+    document.title = `${CODE} · SmartMet4QC`;
+    document.getElementById("code").textContent = CODE;
+
+    async function load() {
+      const enc = encodeURIComponent(CODE);
+      const [detail, readings, alerts, devices] = await Promise.all([
+        api(`/api/v1/batches/${enc}`),
+        api(`/api/v1/batches/${enc}/readings?limit=10000`),
+        api(`/api/v1/alerts?status=all&batch=${enc}&limit=500`),
+        api("/api/v1/devices"),
+      ]);
+      if (detail.status === 404) {
+        document.getElementById("not-found").hidden = false;
+        document.querySelectorAll("main section:not(#not-found)").forEach((s) => (s.hidden = true));
+        return;
+      }
+      if (!detail.ok || !readings.ok || !alerts.ok || !devices.ok) {
+        document.getElementById("updated").textContent = "Cannot reach the server";
+        return;
+      }
+      batch = detail.body;
+      renderHeader(batch);
+      renderDevices(devices.body);
+      renderTiles(batch, alerts.body);
+      renderAlerts(alerts.body);
+      renderCharts(batch, readings.body);
+      stamp(document.getElementById("updated"));
+    }
+
+    function renderHeader(b) {
+      const status = document.getElementById("status");
+      status.textContent = b.status;
+      status.className = "pill " + b.status;
+      document.getElementById("started").textContent =
+        b.started_at ? "started " + fmtTime(b.started_at) : "";
+      document.getElementById("status-buttons").innerHTML = b.status === "active"
+        ? `<button data-status="finished">Mark finished</button> <button class="danger" data-status="aborted">Abort</button>`
+        : `<button data-status="active">Reopen</button>`;
+    }
+
+    function renderDevices(devices) {
+      const mine = devices.filter((d) => d.batch_id === CODE);
+      document.getElementById("devices").innerHTML = mine.length
+        ? mine.map((d) => deviceItem(d, { unassign: true })).join("")
+        : `<li class="empty">No device is measuring this batch. Values can still be entered by hand.</li>`;
+      // Keep the operator's choice while the page refreshes.
+      const select = document.getElementById("device-select");
+      const chosen = select.value;
+      const others = devices.filter((d) => d.active && d.batch_id !== CODE);
+      select.innerHTML = others.map((d) =>
+        `<option value="${esc(d.name)}">${esc(d.name)}${d.batch_id ? " (now on " + esc(d.batch_id) + ")" : ""}</option>`).join("");
+      if (others.some((d) => d.name === chosen)) select.value = chosen;
+      document.getElementById("assign").hidden = !others.length || batch.status !== "active";
+    }
+
+    async function assignDevice(name, batchCode) {
+      const msg = document.getElementById("assign-msg");
+      const result = await api(`/api/v1/devices/${encodeURIComponent(name)}`, {
+        method: "PATCH", body: JSON.stringify({ batch_id: batchCode }),
+      });
+      msg.className = result.ok ? "message ok" : "message error";
+      msg.textContent = result.ok
+        ? (batchCode ? `${name} now measures this batch.` : `${name} stopped measuring this batch.`)
+        : errorText(result.body);
+      load();
+    }
+
+    document.getElementById("assign").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const name = document.getElementById("device-select").value;
+      if (name) assignDevice(name, CODE);
+    });
+    document.getElementById("devices").addEventListener("click", (event) => {
+      const name = event.target.dataset.unassign;
+      if (name && window.confirm(`Stop ${name} from measuring this batch?`)) assignDevice(name, null);
+    });
+
+    function isBad(measurement, value, limits) {
+      if (measurement === "temperature_c") return value > limits.temp_max_c || value < limits.temp_min_c;
+      if (measurement === "ph") return value < limits.ph_min;
+      if (measurement === "turbidity_ntu") return value > limits.turbidity_max_ntu;
+      return false;
+    }
+
+    function tile(label, value, unit, when, bad, note = "") {
+      return `<div class="tile ${bad ? "bad" : ""}">
+        <div class="label">${esc(label)}</div>
+        <div class="value">${esc(value)} <span class="unit">${esc(unit)}</span></div>
+        <div class="when">${esc(note || when)}</div>
+      </div>`;
+    }
+
+    function renderTiles(b, alerts) {
+      const shown = ["temperature_c", "ph", "brix"];
+      for (const extra of ["turbidity_ntu", "ethanol_percent"]) if (b.latest[extra]) shown.push(extra);
+      // An open sensor alert means the latest value itself may be wrong: say so on the tile.
+      const sensorIssue = {};
+      for (const a of alerts) {
+        if (a.status === "open" && a.rule.startsWith("sensor_")) sensorIssue[a.measurement] = RULE_NAMES[a.rule];
+      }
+      const parts = shown.map((m) => {
+        const info = LABELS[m];
+        const latest = b.latest[m];
+        if (!latest) return tile(info.name, "–", info.unit, "no value yet", false);
+        const note = sensorIssue[m] ? `⚠ ${sensorIssue[m]}: check the sensor` : "";
+        return tile(info.name, latest.value.toFixed(info.digits), info.unit,
+          fmtTime(latest.measured_at), isBad(m, latest.value, b.limits), note);
+      });
+      if (!b.latest.ethanol_percent && b.ethanol_estimate !== null) {
+        parts.push(tile("Ethanol (estimate)", "≈ " + b.ethanol_estimate.toFixed(1), "%", "",
+          false, "0.55 × Brix drop · confirm in lab"));
+      }
+      document.getElementById("tiles").innerHTML = parts.join("");
+    }
+
+    function renderAlerts(alerts) {
+      const open = sortAlerts(alerts.filter((a) => a.status === "open"));
+      const resolved = alerts.filter((a) => a.status === "resolved");
+      document.getElementById("alerts").innerHTML = open.length || resolved.length
+        ? open.concat(resolved).map((a) => alertItem(a)).join("")
+        : `<li class="empty">No alerts for this batch.</li>`;
+    }
+
+    // ------------------------------------------------------------- charts
+    function css(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function chartLimits(m, limits) {
+      if (m === "temperature_c") return [["max", limits.temp_max_c], ["min", limits.temp_min_c]];
+      if (m === "ph") return [["min", limits.ph_min]];
+      if (m === "turbidity_ntu") return [["max", limits.turbidity_max_ntu]];
+      if (m === "brix") return [["finished below", limits.brix_done]];
+      return [];
+    }
+
+    function renderCharts(b, readings) {
+      if (!readings.length) {
+        document.getElementById("charts").innerHTML = `<p class="empty">No readings yet.</p>`;
+        return;
+      }
+      const times = readings.map((r) => Date.parse(r.measured_at));
+      const start = Math.min(b.started_at ? Date.parse(b.started_at) : Infinity, ...times);
+      const hours = (iso) => (Date.parse(iso) - start) / 3600000;
+      const lastHour = Math.max(...times.map((t) => (t - start) / 3600000), 1);
+
+      for (const m of Object.keys(LABELS)) {
+        const auto = readings.filter((r) => r[m] !== null && r.source !== "manual")
+          .map((r) => ({ x: hours(r.measured_at), y: r[m] }));
+        const manual = readings.filter((r) => r[m] !== null && r.source === "manual")
+          .map((r) => ({ x: hours(r.measured_at), y: r[m] }));
+        if (!auto.length && !manual.length) continue;
+
+        const datasets = [
+          { label: "sensor", data: auto, borderColor: css("--chart-line"), backgroundColor: css("--chart-line"),
+            borderWidth: 2, pointRadius: 0, tension: 0.2 },
+          { label: "entered by hand", data: manual, showLine: false, pointRadius: 5,
+            borderColor: css("--warning"), backgroundColor: css("--warning") },
+          ...chartLimits(m, b.limits).map(([name, value]) => ({
+            label: `${name} ${value}`, data: [{ x: 0, y: value }, { x: lastHour, y: value }],
+            borderColor: css("--chart-limit"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0,
+          })),
+        ].filter((d) => d.data.length);
+
+        if (charts[m]) {
+          charts[m].data.datasets = datasets;
+          charts[m].options.scales.x.max = lastHour;
+          charts[m].update("none");
+        } else {
+          charts[m] = createChart(m, datasets, lastHour);
+        }
+      }
+    }
+
+    function createChart(m, datasets, lastHour) {
+      const info = LABELS[m];
+      const box = document.createElement("div");
+      box.className = "chart-box";
+      box.innerHTML = `<h3>${esc(info.name)}${info.unit ? " (" + esc(info.unit) + ")" : ""}</h3>
+        <div class="canvas-wrap"><canvas aria-label="${esc(info.name)} over time" role="img"></canvas></div>`;
+      document.getElementById("charts").appendChild(box);
+      const grid = { color: css("--chart-grid") };
+      const ticks = { color: css("--muted") };
+      return new Chart(box.querySelector("canvas"), {
+        type: "line",
+        data: { datasets },
+        options: {
+          animation: false,
+          maintainAspectRatio: false,
+          parsing: false,
+          interaction: { mode: "nearest", intersect: false },
+          scales: {
+            x: { type: "linear", min: 0, max: lastHour, grid, ticks,
+                 title: { display: true, text: "hours", color: css("--muted") } },
+            y: { grid, ticks },
+          },
+          plugins: {
+            legend: { labels: { color: css("--muted"), boxWidth: 12 } },
+            tooltip: { callbacks: { title: (items) => `hour ${items[0].parsed.x.toFixed(1)}` } },
+          },
+        },
+      });
+    }
+
+    // ------------------------------------------------------------- manual entry
+    function localNow() {
+      const d = new Date();
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset(), 0, 0);
+      return d.toISOString().slice(0, 16);
+    }
+
+    async function saveManual(confirm) {
+      const form = document.getElementById("manual");
+      const msg = document.getElementById("manual-msg");
+      const measurements = {};
+      for (const name of ["brix", "ph", "temperature_c"]) {
+        const raw = form.elements[name].value;
+        if (raw !== "") measurements[name] = Number(raw);
+      }
+      if (!Object.keys(measurements).length) {
+        msg.className = "message error";
+        msg.textContent = "Enter at least one value.";
+        return;
+      }
+      const result = await api("/api/v1/manual-readings", {
+        method: "POST",
+        body: JSON.stringify({
+          batch_id: CODE,
+          timestamp: new Date(form.elements.time.value).toISOString(),
+          measurements,
+          confirm,
+        }),
+      });
+
+      if (result.status === 409) {
+        msg.className = "message warn";
+        msg.innerHTML = `<strong>Please check:</strong><ul>${result.body.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+          <button type="button" id="confirm-save">Value is correct, save anyway</button>`;
+        document.getElementById("confirm-save").addEventListener("click", () => saveManual(true));
+        return;
+      }
+      if (!result.ok) {
+        msg.className = "message error";
+        msg.textContent = errorText(result.body);
+        return;
+      }
+      const alerts = result.body.new_alerts.map((a) => `<li>${esc(a.message)}</li>`).join("");
+      msg.className = "message ok";
+      msg.innerHTML = result.body.duplicate
+        ? "A value for this exact time was already saved."
+        : `Saved.${alerts ? `<ul>${alerts}</ul>` : ""}`;
+      for (const name of ["brix", "ph", "temperature_c"]) form.elements[name].value = "";
+      form.elements.time.value = localNow();
+      load();
+    }
+
+    document.getElementById("manual").elements.time.value = localNow();
+    document.getElementById("manual").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveManual(false);
+    });
+
+    // ------------------------------------------------------------- status buttons
+    document.getElementById("status-buttons").addEventListener("click", async (event) => {
+      const status = event.target.dataset.status;
+      if (!status) return;
+      const question = { finished: "Mark this batch as finished?", aborted: "Abort this batch?",
+                         active: "Reopen this batch?" }[status];
+      if (!window.confirm(question)) return;
+      const result = await api(`/api/v1/batches/${encodeURIComponent(CODE)}`, {
+        method: "PATCH", body: JSON.stringify({ status }),
+      });
+      if (result.ok) load(); else alert(errorText(result.body));
+    });
+
+    load();
+    setInterval(load, REFRESH_MS);
+  </script>
+</body>
+</html>

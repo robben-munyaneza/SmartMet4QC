@@ -17,8 +17,8 @@ before the next one starts, so there is always something you can run and test.
 | 2 | Database | PostgreSQL database, tables for batches + readings, import simulator files | Simulated batch stored and read back; DB tests pass | ✅ done |
 | 3 | Backend API | FastAPI: `POST /api/v1/measurements`, read endpoints; simulator `--http` | Simulator posts readings and they appear in the DB | ✅ done |
 | 4 | QC rules + alerts | Limits, alert table, faulty-sensor checks; sensor test from [MVP_PLAN.md](MVP_PLAN.md) §5C | Every scenario caught, no false alerts on `normal` | ✅ done ([results](docs/sensor_test_results.md)) |
-| 5 | Dashboard | Charts, batch history, alerts, manual-entry form | MVP checklist items 1–9 | next |
-| 6 | Hardware | ESP32 with temperature + pH sending the same JSON | Bench test + side-by-side batch | |
+| 5 | Dashboard | Charts, batch history, alerts, manual-entry form | MVP checklist items 1–9 | ✅ done |
+| 6 | Hardware | ESP32 with temperature + pH sending the same JSON | Bench test + side-by-side batch | 6A ✅ server side done · 6B firmware written, needs the hardware |
 
 The old "layers" in this file map to phases as: simulator → 1, database → 2,
 backend → 3, QC → 4, dashboard → 5, hardware → 6. The database comes before
@@ -264,6 +264,167 @@ All four criteria are met. See [docs/sensor_test_results.md](docs/sensor_test_re
   last one.
 - These are results on **simulated** batches with our assumed fermentation
   curve. The rule limits must be re-checked on real batch data (Phase 6).
+
+## Phase 5 — Dashboard and manual entry
+
+### What the operator sees
+- **Home page (`/`)**: all batches, each with status, last reading time and
+  open alerts (critical / warning / finished). Below that, the list of all open
+  alerts, most serious first. A form to start a new batch.
+- **Batch page (`/batches/BATCH-001`)**:
+  - tiles with the latest temperature, pH and Brix. A tile turns red when its
+    value is outside the limit. Estimated ethanol is calculated from the Brix
+    drop.
+  - charts of temperature, pH and Brix over the batch hours, with the limit
+    lines drawn in. Turbidity and ethanol charts appear only if that batch has
+    those values.
+  - alerts of this batch: open first, then the history of resolved ones.
+  - **manual-entry form** for Brix (and optionally pH and temperature).
+  - buttons to mark the batch finished or aborted.
+- The pages update by themselves every 10 seconds.
+
+### Typo check for manual entry (the gap found in Phase 4)
+The form sends to `POST /api/v1/manual-readings`. Before storing, the server
+compares each value with the batch's previous value:
+- Brix **rises** by more than 1: Brix should only fall during fermentation.
+- a change larger than real fermentation can produce in the time since the
+  previous value (same limits as the spike rule).
+
+If something looks wrong, the server answers `409` with the warnings and stores
+nothing. The form shows the warnings and asks "save anyway?". On confirm, it
+resends with `confirm: true`. The check runs on the server, so it is tested
+like the rest of the code.
+
+### New API endpoints
+- `GET /api/v1/batches/{code}`: batch details, the latest value per
+  measurement, estimated ethanol, and the QC limits (for the chart lines)
+- `POST /api/v1/batches`: start a batch (code, product, notes)
+- `PATCH /api/v1/batches/{code}`: change the status (`active` / `finished` /
+  `aborted`)
+- `POST /api/v1/manual-readings`: manual entry with the typo check
+
+### Technical choices
+- Plain HTML, CSS and JavaScript served by the same FastAPI app. No Node.js,
+  no build step, and nothing extra to install.
+- Charts: Chart.js 4.4.1, stored in the project (`smartmet_api/static/vendor`).
+  The dashboard works without internet, which matters on a factory floor.
+- The x-axis is **hours since the batch started**, the batch clock that the
+  rules also use.
+- Estimated ethanol = 0.55 × (first Brix − latest Brix). This is a rough
+  rule of thumb and is labelled "estimate" on screen. The real alcohol content
+  must be measured in a lab.
+
+### Done when
+- MVP checklist items 1–9 from [MVP_PLAN.md](MVP_PLAN.md) can be shown on the
+  dashboard with a simulated batch sent through `--http`.
+- A Brix typo (for example 31 instead of 13) gets a warning, and is only
+  saved after confirmation.
+- API tests cover the new endpoints and the typo check.
+
+### Result
+All three criteria are met, and 53 tests pass. Checked in a browser with
+contamination batch BATCH-005:
+- The home page lists the critical pH alert first.
+- The batch tile turns red.
+- The charts show the pH line crossing the 3.5 limit.
+- Sensor faults are visible as spikes in the charts.
+- Entering Brix 13 after 6 gave the typo warning and was saved only after
+  confirmation.
+
+When an open sensor alert exists for a measurement, its tile says
+"⚠ Sensor jump: check the sensor", so the operator does not trust a value that
+is probably wrong.
+
+Not in the MVP: login for operators, editing the QC limits on screen
+(they are in `smartmet_qc/config.py`), and a view for phones.
+
+## Phase 6 — Real hardware (ESP32)
+
+Phase 6 has a software part, which can be built and tested now, and a hardware
+part, which needs the parts on the bench.
+
+### 6A — Server side (no hardware needed)
+- **Device keys.** Every ESP32 gets its own secret API key and sends it in the
+  `X-API-Key` header.
+  - Readings with `source: device` are only accepted with a valid key.
+  - The server stores only a hash of the key. The key is shown once, when the
+    device is added: `python -m smartmet_db device add tank-1`.
+  - Simulated readings stay allowed for development. Set
+    `ALLOW_SIMULATED=false` in `.env` to block them in production.
+- **Batch assignment.** The operator chooses on the dashboard which batch a
+  device is measuring. The device then sends readings without a `batch_id`, and
+  the server fills in the assigned batch. The firmware never needs to know
+  batch codes. Without an assigned batch, readings are refused with `409`, so
+  nothing lands in the wrong batch.
+- **Which device measured what.** `readings` gets a `device_id` column. Two
+  devices can then measure the same batch at the same time, and a reading can be
+  traced to a sensor, for example when a calibration was wrong. This is the
+  first change to an existing table, so **Alembic migrations** are introduced
+  here:
+  - `python -m smartmet_db migrate` brings any database up to date.
+  - The API runs it at startup.
+- **Devices on the dashboard.** The home page lists the devices with their
+  last contact (online or offline) and their batch. The batch page lets the
+  operator assign a device.
+- **Device emulator.** `python simulator.py --device --api-key KEY --http`
+  sends exactly what the ESP32 will send: temperature and pH only, no batch,
+  no answer key. The whole device path can be tested before the hardware
+  arrives.
+
+### 6B — Firmware and hardware
+Assumed parts (common and cheap; confirm before buying):
+
+| Part | Choice | Why |
+|---|---|---|
+| Board | ESP32 DevKit (ESP32-WROOM-32) | Wi-Fi, cheap, Arduino support |
+| Temperature | DS18B20 waterproof probe + 4.7 kΩ resistor | digital, ±0.5 °C, easy |
+| pH | DFRobot Gravity analog pH sensor/meter **V2** + probe | output 0–3 V is safe for the ESP32 (some cheap pH boards output 5 V, which needs a voltage divider) |
+
+Firmware (`firmware/smartmet_esp32/`, Arduino IDE):
+- reads temperature and pH every 60 s. pH is the median of 30 samples and
+  uses the ESP32's calibrated ADC reading.
+- **two-point pH calibration** with buffer solutions (pH 7 and 4) through
+  the serial monitor. It is saved on the board and survives a restart.
+- pH temperature compensation (the probe's response depends on temperature).
+- gets the time from the internet (NTP) and does not send readings before it
+  knows the time.
+- **keeps up to 2 hours of readings** if Wi-Fi or the server is down, and sends
+  them later. Resending is safe because the server ignores duplicates.
+- Wi-Fi name, password, server address and API key go in `config.h`, which is
+  not committed to git.
+
+Wiring, calibration and the bench test are written up in
+[docs/HARDWARE.md](docs/HARDWARE.md).
+
+### Done when
+- 6A: device-key and batch-assignment tests pass. The emulator's readings
+  appear on the dashboard under the assigned batch. Migrations produce exactly
+  the same schema as the models.
+- 6B (needs hardware): the firmware compiles and runs on the board. The bench
+  test against a reference thermometer and pH buffers is within ±0.5 °C and
+  ±0.1 pH. MVP checklist item 10 passes.
+
+### Result so far
+- **6A is done.** 65 tests pass. Live run against the test database with the
+  emulator:
+  - the unassigned device got `409`
+  - after being assigned on the dashboard, its 60 readings went into
+    BATCH-HW1 and raised the overheat alert
+  - a wrong key got `401`
+  - the dashboard showed the device as online
+- **Migrations:**
+  - your existing database was stamped as baseline `0001` and upgraded to
+    `0002`; all 608 readings are intact
+  - a test checks that migrations always produce exactly the models' schema
+- **6B is written:**
+  - firmware in [firmware/smartmet_esp32](firmware/smartmet_esp32)
+  - guide in [docs/HARDWARE.md](docs/HARDWARE.md)
+
+  The firmware has **not been compiled yet** (no Arduino toolchain on this
+  computer). Next: compile, flash and run the bench test.
+- Still open before a real deployment:
+  - login for the dashboard (anyone on the network can use it now)
+  - HTTPS when the server is not on the local network
 
 ## Next phases (overview; detailed plans come when we start each one)
 

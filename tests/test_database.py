@@ -96,5 +96,36 @@ class DatabaseTests(unittest.TestCase):
             self.store([reading])
 
 
+
+class MigrationTests(unittest.TestCase):
+    """The migrations must build exactly the schema described by the models."""
+
+    def reset(self):
+        Base.metadata.drop_all(engine)
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+    def test_fresh_database(self):
+        self.reset()
+        db.migrate(engine)
+        self.assertEqual(db.schema_differences(engine), [])
+
+    def test_database_from_before_migrations_existed(self):
+        from alembic import command
+
+        self.reset()
+        with engine.begin() as conn:
+            command.upgrade(db._alembic_config(conn), db.BASELINE_REVISION)
+            conn.execute(text("DROP TABLE alembic_version"))  # like the tables made by create_all
+        db.migrate(engine)
+        self.assertEqual(db.schema_differences(engine), [])
+
+    def test_migrate_twice_is_harmless(self):
+        self.reset()
+        db.migrate(engine)
+        db.migrate(engine)
+        self.assertEqual(db.schema_differences(engine), [])
+
+
 if __name__ == "__main__":
     unittest.main()

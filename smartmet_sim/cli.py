@@ -19,25 +19,43 @@ LABELS = (
 )
 
 
+DEVICE_SENSORS = ("temperature_c", "ph")  # what the MVP ESP32 measures (PLAN.md, Phase 6)
+
+
+def as_device_reading(reading: dict) -> dict:
+    """Exactly what the ESP32 sends: no batch (the server knows it), no answer key."""
+    return {
+        "timestamp": reading["timestamp"],
+        "source": "device",
+        "measurements": {k: reading["measurements"][k] for k in DEVICE_SENSORS},
+    }
+
+
 def format_reading(reading: dict) -> str:
     m = reading["measurements"]
-    sim = reading["simulation"]
-    parts = [f"{reading['timestamp'][:16].replace('T', ' ')}  h={sim['elapsed_hours']:6.1f}"]
+    sim = reading.get("simulation")
+    parts = [reading["timestamp"][:16].replace("T", " ")]
+    if sim:
+        parts[0] += f"  h={sim['elapsed_hours']:6.1f}"
     for key, label, unit in LABELS:
-        value = "----" if m[key] is None else f"{m[key]:.2f}"
-        parts.append(f"{label}={value}{unit}")
+        if key in m:
+            value = "----" if m[key] is None else f"{m[key]:.2f}"
+            parts.append(f"{label}={value}{unit}")
     line = "  ".join(parts)
-    if sim["injected_faults"]:
+    if sim and sim["injected_faults"]:
         line += "  FAULT: " + ", ".join(f"{k}={v}" for k, v in sim["injected_faults"].items())
     return line
 
 
-def post_reading(url: str, reading: dict) -> tuple:
+def post_reading(url: str, reading: dict, api_key: str | None = None) -> tuple:
     """Send one reading to the backend. Returns (response body, None) or (None, error message)."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
     request = urllib.request.Request(
         url,
         data=json.dumps(reading).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -69,7 +87,14 @@ def parse_args(argv=None):
     parser.add_argument("--jsonl", metavar="FILE", help="also append each reading to a JSON Lines file")
     parser.add_argument("--http", metavar="URL", nargs="?", const="http://127.0.0.1:8000/api/v1/measurements",
                         help="also send each reading to the backend (default URL: %(const)s)")
-    return parser.parse_args(argv)
+    parser.add_argument("--device", action="store_true",
+                        help="act like the ESP32: send only temperature and pH, as source 'device', without "
+                             "batch id (the server uses the batch assigned to the device); needs --api-key")
+    parser.add_argument("--api-key", help="device API key (from: python -m smartmet_db device add NAME)")
+    args = parser.parse_args(argv)
+    if args.device and not args.api_key:
+        parser.error("--device needs --api-key")
+    return args
 
 
 def main(argv=None):
@@ -85,20 +110,23 @@ def main(argv=None):
     except ValueError as exc:
         sys.exit(f"error: {exc}")
 
-    print(f"SmartMet4QC simulator - batch {args.batch_id}, scenario '{args.scenario}'. Press Ctrl+C to stop.")
+    target = "the device's assigned batch" if args.device else f"batch {args.batch_id}"
+    print(f"SmartMet4QC simulator - {target}, scenario '{args.scenario}'. Press Ctrl+C to stop.")
     out_file = open(args.jsonl, "a", encoding="utf-8") if args.jsonl else None
     sent = failed = 0
     try:
         for i, reading in enumerate(sim.readings(args.count)):
             if i and args.interval > 0:
                 time.sleep(args.interval)
+            if args.device:
+                reading = as_device_reading(reading)
             print(json.dumps(reading) if args.json else format_reading(reading), flush=True)
             if out_file:
                 out_file.write(json.dumps(reading) + "\n")
                 out_file.flush()
             if args.http:
                 # Like a real sensor: report the problem and keep measuring.
-                body, error = post_reading(args.http, reading)
+                body, error = post_reading(args.http, reading, args.api_key)
                 if error:
                     failed += 1
                     print(f"  SEND FAILED: {error}", flush=True)

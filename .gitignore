@@ -6,3 +6,4 @@ data/
 *.jsonl
 .vscode/
 .env
+firmware/**/config.h

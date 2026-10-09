@@ -4,7 +4,7 @@ import os
 import re
 import secrets
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,8 +21,46 @@ def get_sessionmaker(engine: Engine) -> sessionmaker[Session]:
 
 
 def init_tables(engine: Engine) -> None:
-    """Create any missing tables. Existing tables and data are left alone."""
+    """Create all tables straight from the models. Only for empty test databases;
+    real databases are created and updated with migrate()."""
     Base.metadata.create_all(engine)
+
+
+BASELINE_REVISION = "0001"
+
+
+def _alembic_config(connection):
+    from alembic.config import Config
+
+    cfg = Config(str(config.ROOT / "alembic.ini"))
+    cfg.attributes["connection"] = connection
+    return cfg
+
+
+def migrate(engine: Engine) -> None:
+    """Bring the database schema up to date (Alembic upgrade to the latest revision).
+
+    A database created before migrations existed (tables present, no version
+    recorded) is first marked as being at the baseline revision.
+    """
+    from alembic import command
+
+    with engine.begin() as connection:
+        cfg = _alembic_config(connection)
+        tables = inspect(connection)
+        if not tables.has_table("alembic_version") and tables.has_table("batches"):
+            command.stamp(cfg, BASELINE_REVISION)
+        command.upgrade(cfg, "head")
+
+
+def schema_differences(engine: Engine) -> list:
+    """Differences between the database and the models; empty when they match."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        return compare_metadata(context, Base.metadata)
 
 
 def _existing_password() -> str | None:

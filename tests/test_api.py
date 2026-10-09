@@ -1,18 +1,9 @@
 """API tests. They run the API against the smartmet4qc_test database and are
 skipped if the libraries or PostgreSQL are not available."""
 
-import os
 import unittest
 
-try:
-    from fastapi.testclient import TestClient
-    from sqlalchemy.exc import OperationalError
-
-    from smartmet_api.main import app
-    from smartmet_db import config, db
-    from smartmet_db.models import Base
-except ImportError as exc:
-    raise unittest.SkipTest(f"API libraries not installed: {exc}")
+from api_setup import client_for_tests
 
 from smartmet_sim import Simulator
 from smartmet_sim.cli import post_reading
@@ -20,31 +11,10 @@ from smartmet_sim.cli import post_reading
 URL = "/api/v1/measurements"
 
 
-def setUpModule():
-    global client, engine, saved_url
-    try:
-        engine = db.get_engine(test=True)
-        engine.connect().close()
-    except (RuntimeError, OperationalError) as exc:
-        raise unittest.SkipTest(f"test database not available: {exc}")
-    # The API reads DATABASE_URL on startup; point it at the test database.
-    saved_url = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = config.database_url(test=True)
-    client = TestClient(app)
-    client.__enter__()
-
-
-def tearDownModule():
-    client.__exit__(None, None, None)
-    engine.dispose()
-    if saved_url is not None:
-        os.environ["DATABASE_URL"] = saved_url
-
-
 class ApiTests(unittest.TestCase):
     def setUp(self):
-        Base.metadata.drop_all(engine)
-        Base.metadata.create_all(engine)
+        global client
+        client = client_for_tests()
         self.reading = next(Simulator(batch_id="BATCH-API", seed=1).readings())
 
     def test_health(self):
@@ -68,11 +38,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["duplicate"])
 
-    def test_device_reading_without_simulation_and_with_dropout(self):
+    def test_reading_without_simulation_and_with_dropout(self):
         reading = {
             "timestamp": "2026-10-09T10:00:00+02:00",
             "batch_id": "BATCH-API",
-            "source": "device",
+            "source": "simulated",
             "measurements": {"temperature_c": 25.9, "ph": None},
         }
         self.assertEqual(client.post(URL, json=reading).status_code, 201)
@@ -115,7 +85,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(client.get("/api/v1/alerts", params={"batch": "NOPE"}).json(), [])
 
     def test_alert_resolves_when_problem_ends(self):
-        base = {"batch_id": "BATCH-R", "source": "device"}
+        base = {"batch_id": "BATCH-R", "source": "simulated"}
         for hour, ph in enumerate([4.5, 3.2, 3.1, 4.4]):
             client.post(URL, json={**base, "timestamp": f"2026-10-09T{hour:02d}:00:00+00:00",
                                    "measurements": {"ph": ph}})

@@ -54,9 +54,10 @@ def get_or_create_batch(session: Session, code: str, started_at: datetime | None
     return session.scalar(select(Batch).where(Batch.code == code))
 
 
-def store_readings(session: Session, readings) -> tuple[int, int]:
+def store_readings(session: Session, readings, device_id: int | None = None) -> tuple[int, int]:
     """Save readings, creating batches as needed. Returns (inserted, duplicates).
 
+    `device_id` marks all readings as measured by that device.
     The caller commits. Invalid readings raise InvalidReading before anything is written.
     """
     rows = [parse_reading(r) for r in readings]
@@ -68,7 +69,7 @@ def store_readings(session: Session, readings) -> tuple[int, int]:
             batch_ids[code] = get_or_create_batch(session, code, row["measured_at"]).id
         stmt = (
             insert(Reading)
-            .values(batch_id=batch_ids[code], **row)
+            .values(batch_id=batch_ids[code], device_id=device_id, **row)
             .on_conflict_do_nothing(constraint="reading_unique")
             .returning(Reading.id)
         )
@@ -105,3 +106,24 @@ def batch_readings(session: Session, code: str, limit: int | None = None) -> lis
         .limit(limit)
     )
     return list(reversed(session.scalars(stmt).all()))
+
+
+def latest_values(session: Session, batch_id: int, before: datetime | None = None) -> dict:
+    """Latest non-empty value per measurement: {measurement: (measured_at, value)}."""
+    result = {}
+    for name in MEASUREMENTS:
+        column = getattr(Reading, name)
+        stmt = select(Reading.measured_at, column).where(Reading.batch_id == batch_id, column.is_not(None))
+        if before is not None:
+            stmt = stmt.where(Reading.measured_at <= before)
+        row = session.execute(stmt.order_by(Reading.measured_at.desc()).limit(1)).first()
+        if row:
+            result[name] = (row[0], row[1])
+    return result
+
+
+def first_value(session: Session, batch_id: int, name: str) -> float | None:
+    column = getattr(Reading, name)
+    return session.scalar(
+        select(column).where(Reading.batch_id == batch_id, column.is_not(None))
+        .order_by(Reading.measured_at).limit(1))

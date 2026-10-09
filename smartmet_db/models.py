@@ -50,11 +50,29 @@ class Batch(Base):
     alerts: Mapped[list["Alert"]] = relationship(back_populates="batch", passive_deletes=True)
 
 
+class Device(Base):
+    """A measuring device (ESP32). It authenticates with an API key; only the key's hash is stored."""
+
+    __tablename__ = "devices"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+    api_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True)  # NULL = key revoked
+    # The batch this device is measuring now, chosen on the dashboard.
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("batches.id", ondelete="SET NULL"))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    batch: Mapped[Batch | None] = relationship()
+
+
 class Reading(Base):
     __tablename__ = "readings"
     __table_args__ = (
         # Re-sending or re-importing the same reading must not create a duplicate.
-        UniqueConstraint("batch_id", "measured_at", "source", name="reading_unique"),
+        # NULLS NOT DISTINCT: readings without a device (simulated, manual) are deduplicated too.
+        UniqueConstraint("batch_id", "measured_at", "source", "device_id", name="reading_unique",
+                         postgresql_nulls_not_distinct=True),
         CheckConstraint(_in("source", SOURCES), name="reading_source_valid"),
         # Physical sanity limits only; quality limits come in Phase 4.
         CheckConstraint("temperature_c BETWEEN -50 AND 150", name="temperature_range"),
@@ -69,6 +87,8 @@ class Reading(Base):
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     source: Mapped[str] = mapped_column(String(20))
+    # The device that measured it; NULL for simulated and manual readings.
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"))
 
     # One column per measurement; NULL means the sensor sent no value.
     temperature_c: Mapped[float | None] = mapped_column(Float)
